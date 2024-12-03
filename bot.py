@@ -1,9 +1,20 @@
-import config
+import asyncio
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 import telebot
-from telebot import types
+from aiosmtplib import SMTP
 from fuzzywuzzy import fuzz
+from telebot import types
+import config
 
 bot = telebot.TeleBot(config.token)
+
+# Данные для отправки email
+EMAIL_HOST = "smtp.mail.ru"      # SMTP-сервер для Mail.ru
+EMAIL_PORT = 465                 # Порт SMTP
+EMAIL_USER = "library_email@mail.ru"  # Почта библиотеки
+EMAIL_PASS = "your_password"         # Пароль почты библиотеки
+EMAIL_TO = "library_email@mail.ru"   # Адрес библиотеки
 
 # Словарь вопросов и ответов с синонимами
 FAQ_ANSWERS = {
@@ -54,67 +65,99 @@ FAQ_ANSWERS = {
                   "Посетить мероприятия, экскурсии, купить книги.\n\n"
                   "7. <b>Дополнительные услуги:</b>\n"
                   "Ксерокопия, презентации, экспертизы книг.",
-        "synonyms": ["часто задаваемые вопросы", "вопросы", "Кто может записаться?","Как записаться?","Что можно делать с читательским билетом?","Как заказать книги?","Как продлить книги?","Что можно без билета?","Дополнительные услуги"]
+        "synonyms": ["часто задаваемые вопросы", "вопрос", "задать вопрос"]
     }
 }
+# Временное хранилище для данных пользователей
+user_data = {}
 
-# Функция для поиска ближайшего совпадения
+# Функция для поиска похожих запросов
 def get_closest_match(user_input):
-    best_match = None
-    highest_score = 0
+    best_match, highest_score = None, 0
     for key, data in FAQ_ANSWERS.items():
         for synonym in data["synonyms"]:
             similarity = fuzz.partial_ratio(user_input.lower(), synonym.lower())
             if similarity > highest_score:
-                best_match = key
-                highest_score = similarity
-    return best_match if highest_score > 60 else None  # Порог 60%
+                best_match, highest_score = key, similarity
+    return best_match if highest_score > 60 else None  # Порог совпадения
 
-# Команда /start
-@bot.message_handler(commands=['go', 'start'])
+# Асинхронная отправка email
+async def send_email_async(name, phone, email, city, message):
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = EMAIL_USER
+        msg["To"] = EMAIL_TO
+        msg["Subject"] = "Вопрос библиотекарю"
+        body = f"<b>Имя:</b> {name}<br><b>Телефон:</b> {phone}<br><b>Email:</b> {email}<br>" \
+               f"<b>Город:</b> {city}<br><b>Сообщение:</b> {message}"
+        msg.attach(MIMEText(body, "html", "utf-8"))
+        smtp_client = SMTP(hostname=EMAIL_HOST, port=EMAIL_PORT, use_tls=True)
+        async with smtp_client:
+            await smtp_client.login(EMAIL_USER, EMAIL_PASS)
+            await smtp_client.send_message(msg)
+    except Exception as e:
+        print(f"Ошибка отправки email: {e}")
+
+# Стартовое сообщение
+@bot.message_handler(commands=['start'])
 def welcome(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    item1 = types.KeyboardButton("О нас")
-    item2 = types.KeyboardButton("Мероприятия")
-    item3 = types.KeyboardButton("Как записаться на экскурсию?")
-    item4 = types.KeyboardButton("Часто задаваемые вопросы")
-    markup.add(item1, item2, item3, item4)
-
+    markup.add("О нас", "Мероприятия", "Как записаться на экскурсию?")
+    markup.add("Часто задаваемые вопросы", "Задать вопрос библиотекарю")
     bot.send_message(
         message.chat.id,
-        f"Добро пожаловать, {message.from_user.first_name}!\n\n"
-        f"Я - <b>{bot.get_me().first_name}</b>, бот Национальной Библиотеки Республики Бурятия.\n\n"
-        "Я помогу вам узнать о возможностях нашей библиотеки, "
-        "посмотреть мероприятия или зарегистрироваться на экскурсии.\n\n"
-        "Выберите интересующий вас пункт в меню 👇",
-        parse_mode='html', reply_markup=markup
+        f"Добро пожаловать, {message.from_user.first_name}! Выберите интересующий вас пункт в меню 👇",
+        reply_markup=markup,
     )
 
-# Обработчик текстовых сообщений
+# Обработка текста
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
-    user_input = message.text.strip()
-    match = get_closest_match(user_input)
+    user_id = message.chat.id
+    if user_id in user_data and "step" in user_data[user_id]:
+        process_dialog(message)
+        return
 
-    if match:
-        bot.send_message(
-            message.chat.id,
-            FAQ_ANSWERS[match]["answer"],
-            parse_mode='html'
-        )
+    if message.text == "Задать вопрос библиотекарю":
+        user_data[user_id] = {"step": "name"}
+        bot.send_message(user_id, "Введите ваше имя:")
     else:
-        bot.send_message(
-            message.chat.id,
-            "🤔 Извините, я не понял ваш запрос. Попробуйте уточнить вопрос или выберите пункт из меню.",
+        user_input = message.text.strip()
+        match = get_closest_match(user_input)
+        if match:
+            bot.send_message(user_id, FAQ_ANSWERS[match]["answer"], parse_mode='html')
+        else:
+            bot.send_message(user_id, "🤔 Я не понял ваш запрос. Попробуйте уточнить вопрос.")
+
+# Обработка этапов диалога
+def process_dialog(message):
+    user_id = message.chat.id
+    step = user_data[user_id]["step"]
+
+    if step == "name":
+        user_data[user_id]["name"] = message.text
+        user_data[user_id]["step"] = "phone"
+        bot.send_message(user_id, "Введите ваш телефон:")
+    elif step == "phone":
+        user_data[user_id]["phone"] = message.text
+        user_data[user_id]["step"] = "email"
+        bot.send_message(user_id, "Введите ваш E-mail:")
+    elif step == "email":
+        user_data[user_id]["email"] = message.text
+        user_data[user_id]["step"] = "city"
+        bot.send_message(user_id, "Введите ваш город (по желанию):")
+    elif step == "city":
+        user_data[user_id]["city"] = message.text
+        user_data[user_id]["step"] = "message"
+        bot.send_message(user_id, "Введите ваше сообщение:")
+    elif step == "message":
+        user_data[user_id]["message"] = message.text
+        data = user_data.pop(user_id)  # Удаляем данные после отправки
+        asyncio.create_task(
+            send_email_async(data["name"], data["phone"], data["email"], data["city"], data["message"])
         )
+        bot.send_message(user_id, "✅ Спасибо! Ваш вопрос отправлен. Мы свяжемся с вами в ближайшее время.")
 
 # Запуск бота
 if __name__ == "__main__":
-    try:
-        bot.polling(none_stop=True)
-    except ConnectionError as e:
-        print('Ошибка соединения: ', e)
-    except Exception as r:
-        print("Непредвиденная ошибка: ", r)
-    finally:
-        print("Завершение работы бота.")
+    bot.infinity_polling()

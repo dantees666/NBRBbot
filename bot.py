@@ -6,15 +6,16 @@ from aiosmtplib import SMTP
 from fuzzywuzzy import fuzz
 from telebot import types
 import config
+import time
 
 bot = telebot.TeleBot(config.token)
 
 # Данные для отправки email
-EMAIL_HOST = "smtp.mail.ru"      # SMTP-сервер для Mail.ru
-EMAIL_PORT = 465                 # Порт SMTP
-EMAIL_USER = "library_email@mail.ru"  # Почта библиотеки
-EMAIL_PASS = "your_password"         # Пароль почты библиотеки
-EMAIL_TO = "library_email@mail.ru"   # Адрес библиотеки
+EMAIL_HOST = "smtp.mail.ru"
+EMAIL_PORT = 465
+EMAIL_USER = "********" # Почта с которой отправляется сообщение
+EMAIL_PASS = "*********" # Специальный пароль для приложения (создаётся в личном кабинете эмэйл!)
+EMAIL_TO = "**********" # Почта на которую приходят сообщения
 
 # Словарь вопросов и ответов с синонимами
 FAQ_ANSWERS = {
@@ -71,6 +72,9 @@ FAQ_ANSWERS = {
 # Временное хранилище для данных пользователей
 user_data = {}
 
+# Список доступных тем для сообщения
+EMAIL_SUBJECTS = ["Вопрос библиотекарю", "Вопрос по абонементу", "Вопрос по книгам", "Вопрос о мероприятиях", "Техническая поддержка"]
+
 # Функция для поиска похожих запросов
 def get_closest_match(user_input):
     best_match, highest_score = None, 0
@@ -81,22 +85,24 @@ def get_closest_match(user_input):
                 best_match, highest_score = key, similarity
     return best_match if highest_score > 60 else None  # Порог совпадения
 
+
 # Асинхронная отправка email
-async def send_email_async(name, phone, email, city, message):
+async def send_email_async(name, phone, email, city, subject, message):
     try:
         msg = MIMEMultipart()
         msg["From"] = EMAIL_USER
         msg["To"] = EMAIL_TO
-        msg["Subject"] = "Вопрос библиотекарю"
-        body = f"<b>Имя:</b> {name}<br><b>Телефон:</b> {phone}<br><b>Email:</b> {email}<br>" \
-               f"<b>Город:</b> {city}<br><b>Сообщение:</b> {message}"
+        msg["Subject"] = subject  # Выбранная пользователем тему письма
+        body = (f"<b>Имя:</b> {name}<br><b>Телефон:</b> {phone}<br><b>Email:</b> {email}<br>"
+                f"<b>Город:</b> {city}<br><b>Сообщение:</b> {message}")
         msg.attach(MIMEText(body, "html", "utf-8"))
-        smtp_client = SMTP(hostname=EMAIL_HOST, port=EMAIL_PORT, use_tls=True)
-        async with smtp_client:
+
+        async with SMTP(hostname=EMAIL_HOST, port=EMAIL_PORT, use_tls=True) as smtp_client:
             await smtp_client.login(EMAIL_USER, EMAIL_PASS)
             await smtp_client.send_message(msg)
     except Exception as e:
         print(f"Ошибка отправки email: {e}")
+
 
 # Стартовое сообщение
 @bot.message_handler(commands=['start'])
@@ -114,7 +120,7 @@ def welcome(message):
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
     user_id = message.chat.id
-    if user_id in user_data and "step" in user_data[user_id]:
+    if user_id in user_data and user_data[user_id].get("step"):
         process_dialog(message)
         return
 
@@ -129,33 +135,59 @@ def handle_text(message):
         else:
             bot.send_message(user_id, "🤔 Я не понял ваш запрос. Попробуйте уточнить вопрос.")
 
+
 # Обработка этапов диалога
 def process_dialog(message):
     user_id = message.chat.id
-    step = user_data[user_id]["step"]
+    user = user_data.setdefault(user_id, {})
+    step = user.get("step")
 
     if step == "name":
-        user_data[user_id]["name"] = message.text
-        user_data[user_id]["step"] = "phone"
-        bot.send_message(user_id, "Введите ваш телефон:")
+        user["name"] = message.text
+        user["step"] = "subject"
+
+        # Отправляем клавиатуру с темами
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        for subject in EMAIL_SUBJECTS:
+            markup.add(subject)
+        bot.send_message(user_id, "Выберите тему вашего вопроса:", reply_markup=markup)
+
+    elif step == "subject":
+        if message.text in EMAIL_SUBJECTS:
+            user["subject"] = message.text
+            user["step"] = "phone"
+            bot.send_message(user_id, "Введите ваш телефон:")
+        else:
+            bot.send_message(user_id, "Пожалуйста, выберите тему из предложенных вариантов.")
+
     elif step == "phone":
-        user_data[user_id]["phone"] = message.text
-        user_data[user_id]["step"] = "email"
+        user["phone"] = message.text
+        user["step"] = "email"
         bot.send_message(user_id, "Введите ваш E-mail:")
+
     elif step == "email":
-        user_data[user_id]["email"] = message.text
-        user_data[user_id]["step"] = "city"
+        user["email"] = message.text
+        user["step"] = "city"
         bot.send_message(user_id, "Введите ваш город (по желанию):")
+
     elif step == "city":
-        user_data[user_id]["city"] = message.text
-        user_data[user_id]["step"] = "message"
+        user["city"] = message.text
+        user["step"] = "message"
         bot.send_message(user_id, "Введите ваше сообщение:")
+
     elif step == "message":
-        user_data[user_id]["message"] = message.text
-        data = user_data.pop(user_id)  # Удаляем данные после отправки
-        asyncio.create_task(
-            send_email_async(data["name"], data["phone"], data["email"], data["city"], data["message"])
-        )
+        user["message"] = message.text
+        data = user_data.pop(user_id, {})
+
+        asyncio.run(send_email_async(
+            data.get("name"),
+            data.get("phone"),
+            data.get("email"),
+            data.get("city", 'Не указан'),
+            data.get("subject", 'Вопрос библиотекарю'),  # Используем выбранную тему
+            data.get("message")
+        ))
+
         bot.send_message(user_id, "✅ Спасибо! Ваш вопрос отправлен. Мы свяжемся с вами в ближайшее время.")
 
 # Запуск бота

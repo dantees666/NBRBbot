@@ -6,16 +6,16 @@ from aiosmtplib import SMTP
 from fuzzywuzzy import fuzz
 from telebot import types
 import config
-import time
+import re
 
 bot = telebot.TeleBot(config.token)
 
 # Данные для отправки email
 EMAIL_HOST = "smtp.mail.ru"
 EMAIL_PORT = 465
-EMAIL_USER = "********" # Почта с которой отправляется сообщение
-EMAIL_PASS = "*********" # Специальный пароль для приложения (создаётся в личном кабинете эмэйл!)
-EMAIL_TO = "**********" # Почта на которую приходят сообщения
+EMAIL_USER = "tumen95@bk.ru" # Почта с которой отправляется сообщение
+EMAIL_PASS = "***********" # Специальный пароль для приложения (создаётся в личном кабинете эмэйл!)
+EMAIL_TO = "tumen95@bk.ru" # Почта на которую приходят сообщения
 
 # Словарь вопросов и ответов с синонимами
 FAQ_ANSWERS = {
@@ -66,14 +66,21 @@ FAQ_ANSWERS = {
                   "Посетить мероприятия, экскурсии, купить книги.\n\n"
                   "7. <b>Дополнительные услуги:</b>\n"
                   "Ксерокопия, презентации, экспертизы книг.",
-        "synonyms": ["часто задаваемые вопросы", "вопрос", "задать вопрос"]
+        "synonyms": ["часто задаваемые вопросы", "вопрос", "задать вопрос", "книги", "Без билета", "Заказать"]
     }
 }
 # Временное хранилище для данных пользователей
 user_data = {}
 
 # Список доступных тем для сообщения
-EMAIL_SUBJECTS = ["Вопрос библиотекарю", "Вопрос по абонементу", "Вопрос по книгам", "Вопрос о мероприятиях", "Техническая поддержка"]
+EMAIL_SUBJECTS = ["Вопрос библиотекарю", "Вопрос по абонементу", "Вопрос по книгам", "Вопрос о мероприятиях",
+                  "Техническая поддержка"]
+
+# Регулярные выражения для проверки ввода телефона и email
+PHONE_REGEX = r"^\+?[78][0-9]{10}$"  # Российский номер телефона (7, 8 или +7 и 10 цифр)
+EMAIL_REGEX = r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$"  # Стандартная проверка email
+LIBRARY_CART_REGEX = r"^[0-9]{6}$"  # Номер читательского билета библиотеки (6 цифр)
+
 
 # Функция для поиска похожих запросов
 def get_closest_match(user_input):
@@ -87,14 +94,14 @@ def get_closest_match(user_input):
 
 
 # Асинхронная отправка email
-async def send_email_async(name, phone, email, city, subject, message):
+async def send_email_async(name, phone, email, city, subject, message, library_card):
     try:
         msg = MIMEMultipart()
         msg["From"] = EMAIL_USER
         msg["To"] = EMAIL_TO
         msg["Subject"] = subject  # Выбранная пользователем тему письма
         body = (f"<b>Имя:</b> {name}<br><b>Телефон:</b> {phone}<br><b>Email:</b> {email}<br>"
-                f"<b>Город:</b> {city}<br><b>Сообщение:</b> {message}")
+                f"<b>Город:</b> {city}<br><b>Сообщение:</b> {message}<br><b>Читательский билет:</b> {library_card}")
         msg.attach(MIMEText(body, "html", "utf-8"))
 
         async with SMTP(hostname=EMAIL_HOST, port=EMAIL_PORT, use_tls=True) as smtp_client:
@@ -102,6 +109,12 @@ async def send_email_async(name, phone, email, city, subject, message):
             await smtp_client.send_message(msg)
     except Exception as e:
         print(f"Ошибка отправки email: {e}")
+
+
+def add_interrupt_buttons():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("Прервать (Задать вопрос библиотекарю)")
+    return markup
 
 
 # Стартовое сообщение
@@ -116,6 +129,7 @@ def welcome(message):
         reply_markup=markup,
     )
 
+
 # Обработка текста
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
@@ -125,8 +139,36 @@ def handle_text(message):
         return
 
     if message.text == "Задать вопрос библиотекарю":
+        description = (
+            "Спросить библиотекаря — Национальная библиотека РБ\n\n"
+            "Что можно запросить бесплатно:\n"
+            "- Список литературы (до 10 наименований) и ссылки на источники.\n"
+            "- Уточнение данных о книгах, местонахождении изданий в библиотеке.\n"
+            "- Консультации по работе отделов библиотеки.\n\n"
+            "Платные услуги:\n"
+            "- Сканирование статей (но не книг полностью).\n"
+            "- Списки литературы более 10 наименований.\n"
+            "- Копирование электронных документов на носители.\n"
+            "- Отправка документов по электронной почте.\n\n"
+            "Что библиотека не делает:\n"
+            "- Не решает задачи по точным наукам.\n"
+            "- Не пишет за вас рефераты, курсовые, дипломы.\n"
+            "- Не ищет информацию о родственниках и истории населённых пунктов.\n"
+            "- Не предоставляет полные электронные версии книг (только в здании библиотеки).\n\n"
+            "Как задать вопрос:\n"
+            "- Заполнить форму, выбрать тематику и отправить запрос.\n"
+            "- Ответ приходит в течение 1-3 рабочих дней.\n\n"
+            "Лимиты:\n"
+            "- Не более 3 запросов в день от одного пользователя.\n\n"
+            "Часы работы:\n"
+            "- Онлайн-запросы принимаются ежедневно, кроме выходных и праздников (время Улан-Удэ, UTC+9)."
+        )
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        markup.add("Написать сообщение", "Не писать")
+        bot.send_message(user_id, description, reply_markup=markup)
+    elif message.text == "Написать сообщение":
         user_data[user_id] = {"step": "name"}
-        bot.send_message(user_id, "Введите ваше имя:")
+        bot.send_message(user_id, "Как к вам обращаться:", reply_markup=add_interrupt_buttons())
     else:
         user_input = message.text.strip()
         match = get_closest_match(user_input)
@@ -142,11 +184,15 @@ def process_dialog(message):
     user = user_data.setdefault(user_id, {})
     step = user.get("step")
 
+    if message.text == "Прервать":
+        user_data.pop(user_id, None)
+        bot.send_message(user_id, "Диалог прерван. Чем ещё могу помочь?", reply_markup=add_interrupt_buttons())
+        return
+
     if step == "name":
         user["name"] = message.text
         user["step"] = "subject"
 
-        # Отправляем клавиатуру с темами
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         for subject in EMAIL_SUBJECTS:
             markup.add(subject)
@@ -156,24 +202,53 @@ def process_dialog(message):
         if message.text in EMAIL_SUBJECTS:
             user["subject"] = message.text
             user["step"] = "phone"
-            bot.send_message(user_id, "Введите ваш телефон:")
+            bot.send_message(user_id, "Введите ваш телефон:", reply_markup=add_interrupt_buttons())
         else:
             bot.send_message(user_id, "Пожалуйста, выберите тему из предложенных вариантов.")
 
     elif step == "phone":
-        user["phone"] = message.text
-        user["step"] = "email"
-        bot.send_message(user_id, "Введите ваш E-mail:")
+        if re.match(PHONE_REGEX, message.text):
+            user["phone"] = message.text
+            user["step"] = "has_library_card"
+            markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            markup.add("Да", "Нет")
+            bot.send_message(user_id, "Есть ли у вас читательский билет?", reply_markup=markup)
+        else:
+            bot.send_message(user_id,
+                             "🚫 Неверный формат телефона. Введите номер в формате +7XXXXXXXXXX или 8XXXXXXXXXX.")
+
+    elif step == "has_library_card":
+        if message.text.lower() == "да":
+            user["step"] = "library_card"
+            bot.send_message(user_id, "Введите номер читательского билета (6 цифр):",
+                             reply_markup=add_interrupt_buttons())
+        else:
+            user["step"] = "email"
+            bot.send_message(user_id, "Введите ваш E-mail:", reply_markup=add_interrupt_buttons())
+
+    elif step == "library_card":
+        if re.match(LIBRARY_CART_REGEX, message.text):
+            user["library_card"] = message.text
+            user["step"] = "email"
+            bot.send_message(user_id, "Введите ваш E-mail:", reply_markup=add_interrupt_buttons())
+        else:
+            bot.send_message(user_id, "🚫 Номер читательского билета должен состоять из 6 цифр. Попробуйте снова.")
 
     elif step == "email":
-        user["email"] = message.text
-        user["step"] = "city"
-        bot.send_message(user_id, "Введите ваш город (по желанию):")
+        if re.match(EMAIL_REGEX, message.text):
+            user["email"] = message.text
+            user["step"] = "city"
+            markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+            markup.add("Пропустить")
+            bot.send_message(user_id, "Введите ваш город (по желанию):", reply_markup=markup)
+        else:
+            bot.send_message(user_id, "🚫 Неверный формат E-mail. Убедитесь, что адрес введён правильно.")
 
     elif step == "city":
         user["city"] = message.text
         user["step"] = "message"
-        bot.send_message(user_id, "Введите ваше сообщение:")
+        bot.send_message(user_id, "Введите ваше сообщение:", reply_markup=add_interrupt_buttons())
+
 
     elif step == "message":
         user["message"] = message.text
@@ -184,11 +259,12 @@ def process_dialog(message):
             data.get("phone"),
             data.get("email"),
             data.get("city", 'Не указан'),
-            data.get("subject", 'Вопрос библиотекарю'),  # Используем выбранную тему
-            data.get("message")
+            data.get("subject", 'Вопрос библиотекарю'),
+            data.get("message"),
+            data.get("library_card", 'Не указан')
         ))
 
-        bot.send_message(user_id, "✅ Спасибо! Ваш вопрос отправлен. Мы свяжемся с вами в ближайшее время.")
+        bot.send_message(user_id, "✅ Спасибо! Ваш вопрос отправлен.")
 
 # Запуск бота
 if __name__ == "__main__":

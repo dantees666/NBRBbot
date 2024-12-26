@@ -41,11 +41,11 @@ FAQ_ANSWERS = {
                   "📌 Следите за афишей на <a href='https://nbrbru.tmweb.ru/affiche/'>нашем сайте</a>.",
         "synonyms": ["мероприятия", "какие мероприятия проходят", "что происходит в библиотеке"]
     },
-    "экскурсия": {
-        "answer": "🚶‍♂️ <b>Как записаться на экскурсию?</b>\n\n"
+    "мероприятие": {
+        "answer": "🚶‍♂️ <b>Как записаться на мероприятие?</b>\n\n"
                   "Запись возможна на стойке регистрации или онлайн по "
                   "<a href='https://iframeab-pre6061.intickets.ru/event/12331186'>ссылке</a>.",
-        "synonyms": ["экскурсия", "как записаться на экскурсию", "запись на экскурсию"]
+        "synonyms": ["мероприятие", "как записаться на мероприятие", "запись на мероприятие"]
     },
     "часто задаваемые вопросы": {
         "answer": "📚 <b>Часто задаваемые вопросы:</b>\n\n"
@@ -121,7 +121,7 @@ def add_interrupt_buttons():
 @bot.message_handler(commands=['start'])
 def welcome(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("О нас", "Мероприятия", "Как записаться на экскурсию?")
+    markup.add("О нас", "Мероприятия", "Записаться на мероприятие")
     markup.add("Часто задаваемые вопросы", "Задать вопрос библиотекарю")
     bot.send_message(
         message.chat.id,
@@ -169,6 +169,8 @@ def handle_text(message):
     elif message.text == "Написать сообщение":
         user_data[user_id] = {"step": "name"}
         bot.send_message(user_id, "Как к вам обращаться:", reply_markup=add_interrupt_buttons())
+    elif message.text == "Записаться на мероприятие":
+        present_event(user_id)
     else:
         user_input = message.text.strip()
         match = get_closest_match(user_input)
@@ -265,6 +267,17 @@ def process_dialog(message):
         ))
 
         bot.send_message(user_id, "✅ Спасибо! Ваш вопрос отправлен.")
+
+def present_event(user_id):
+    event_image = "https://nbrb.ru/upload/iblock/f91/wy5xg4iz4gqv3prwoafzqh0twae1rayj/2110_lekcia.jpg"
+    event_title = "<b>" + "nazvanie sobitiya" + "</b>"
+    event_description = "opisanie sobitiya"
+    event_url = 'https://iframeab-pre6061.intickets.ru/event/38835263'
+    caption = event_title + "\n\n" + event_description
+    markup = types.InlineKeyboardMarkup()
+    event_link_button = types.InlineKeyboardButton("Записаться!", event_url)
+    markup.add(event_link_button)
+    bot.send_photo(user_id, event_image, caption, parse_mode='html', reply_markup = markup)
 
 # Запуск бота
 if __name__ == "__main__":

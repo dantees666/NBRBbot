@@ -7,8 +7,16 @@ from fuzzywuzzy import fuzz
 from telebot import types
 import config
 import re
+import requests
+from bs4 import BeautifulSoup
 
 bot = telebot.TeleBot(config.token)
+
+class Event:
+    def __init__(self, title, pic, link):
+        self.title = title,
+        self.pic = pic,
+        self.link = link
 
 # Данные для отправки email
 EMAIL_HOST = "smtp.mail.ru"
@@ -170,7 +178,9 @@ def handle_text(message):
         user_data[user_id] = {"step": "name"}
         bot.send_message(user_id, "Как к вам обращаться:", reply_markup=add_interrupt_buttons())
     elif message.text == "Записаться на мероприятие":
-        present_event(user_id)
+        events_data = parse()
+        for event in events_data:
+            present_event(user_id, event)
     else:
         user_input = message.text.strip()
         match = get_closest_match(user_input)
@@ -267,17 +277,67 @@ def process_dialog(message):
         ))
 
         bot.send_message(user_id, "✅ Спасибо! Ваш вопрос отправлен.")
-
-def present_event(user_id):
-    event_image = "https://nbrb.ru/upload/iblock/f91/wy5xg4iz4gqv3prwoafzqh0twae1rayj/2110_lekcia.jpg"
-    event_title = "<b>" + "nazvanie sobitiya" + "</b>"
-    event_description = "opisanie sobitiya"
-    event_url = 'https://iframeab-pre6061.intickets.ru/event/38835263'
-    caption = event_title + "\n\n" + event_description
+# Отображение события
+def present_event(user_id, event):
+    event_title = "<b>" + event.title[0] + "</b>"
     markup = types.InlineKeyboardMarkup()
-    event_link_button = types.InlineKeyboardButton("Записаться!", event_url)
+    event_link_button = types.InlineKeyboardButton("Записаться!", event.link)
     markup.add(event_link_button)
-    bot.send_photo(user_id, event_image, caption, parse_mode='html', reply_markup = markup)
+    bot.send_photo(user_id, event.pic[0], event_title, parse_mode='html', reply_markup = markup)
+
+def parse():
+    st_accept = "text/html"  # говорим веб-серверу,
+    # что хотим получить html
+    # имитируем подключение через браузер Mozilla на macOS
+    st_useragent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 12_3_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15"
+    # формируем хеш заголовков
+    headers = {
+        "Accept": st_accept,
+        "User-Agent": st_useragent
+    }
+
+    url = 'https://nbrb.ru/affiche/pushkinskaya-karta/'
+
+    filtred_titles = []
+
+    all_events_links = []
+    filtred_event_links = []
+
+    all_event_pics = []
+    filtred_ivent_pics = []
+
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'lxml')
+
+    all_events_links = soup.findAll('div', class_='blog-list__item-title switcher-title font_16')
+
+    for data in all_events_links:
+        if data.find('a', class_='dark_link') is not None:
+            filtred_titles.append(data.getText(strip=True))
+
+    for data in all_events_links:
+        filtred_event_links.append('https://nbrb.ru/' + data.find('a').get('href'))
+
+    all_event_pics = soup.findAll('a', class_='blog-list__item-link')
+    for data in all_event_pics:
+        filtred_ivent_pics.append('https://nbrb.ru/' + data.find('span').get('data-bg'))
+
+    all_links = []
+
+    for url in filtred_event_links:
+        response = requests.get(url)
+        soup = BeautifulSoup(response.text, 'lxml')
+
+        # Извлекаем все <div> с классом 'content'
+        content_divs = soup.find_all('div', class_='content')
+
+        for div in content_divs:
+            # Извлекаем все ссылки внутри <div> и добавляем их в массив
+            links_in_div = [a['href'] for a in div.find_all('a', href=True)]
+            all_links.extend(links_in_div)  # Добавляем ссылки в общий массив
+
+    return [Event(title, pic, link) for title, pic, link in zip(filtred_titles, filtred_ivent_pics, all_links)]
+
 
 # Запуск бота
 if __name__ == "__main__":
